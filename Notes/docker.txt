@@ -1,0 +1,265 @@
+INTRO TO DOCKER
+
+Docker Hub has thousands of pre-made containers that you can download instead
+of building your own.
+
+From you regular environment, run:
+
+docker pull mongo:3
+
+to get the container off of docker hub.
+
+Run:
+
+docker ps to show which docker containers are currently runing
+
+------------------------------------------------------------------------------------------------------------------------------------
+
+DOCKER IMAGES WITHOUT DOCKER DEMO
+
+ A pre-made container is called and image and you can layer them. An image captures the state of a container
+ and tars it together in essentially a zip file.
+
+ I want to run the container within a container just to mimic BH setup and avoid
+ issues that i was starting to encounter in the previous section of the tutorial.
+
+ NOTE: that you can remove containers by running:
+
+ docker container ls -a
+
+ grab the container ID then run:
+
+ docker container rm [with the CID here]
+
+
+1). start a docker container with docker running in it connected to host docker daemon
+
+docker run -ti -v /var/run/docker.sock:/var/run/docker.sock --privileged --rm --name docker-host docker:18.06.1-ce
+
+This is going to run a docker container that has a docker client that is connected to you host computer (or VM).
+It will connect to the docker that's running on docker desktop. I'm not running docker desktop though but
+I believe that the docker daemon (dockerd) is running in the background on linux.
+
+I'm not completely sure what this command is doing, but typically you cannot connect outside of the host but
+the -v flag allows you to do so (opens a tunnel to the host docker container). It also downloaded docker:18.06.1-ce
+in order to execute the command.
+
+
+2). upon running cat/etc/issue from within the docker container we just downloaded and are running we see that
+we are running a Linux Alpine container
+
+3). if we docker ps from within our container we can see outside of the container and see that docker:18.06.1-ce
+is running (i believe we named it docker-host). Again this is atypical
+
+4). Now from within our Alpine container we want to chroot, unshare, and cgroup another container that we download
+from dockerhub so that we can show how containers (mostly) work manually. The first step we're going to take is to
+download and run a new container that does nothing. We will basically then copy this container's state (whic is what
+an image is) and run it manually (chroot, unshare, cgroup) without docker:
+
+docker run --rm -dit --name my-alpine alpine:3.10 sh
+
+(this will run ANOTHER alpine container that we are going to copy)
+
+5). Run docker ps to see that both the my-alpine and the docker-host containers are running (on the bare metal).
+
+6). To copy the state of the my-alpine container and create and image run:
+
+docker export -o dockercontainer.tar my-alpine
+
+7). ls to see the .tar image file
+
+8). create the directory into which we are going to "unzip" the my-apine image using:
+
+mkdir container-root
+
+9). unzip the image and place the contents into our newly created manual container root directory:
+
+tar xf dockercontainer.tar -C container-root
+
+10). ls into container root to see that it is a familiar looking linux filesystem
+
+11). Set up a cgroup:
+
+----------------------------------------------------------------------------------------------------------------------
+ALPINE LINUX CGROUP SETUP:
+
+It looks like BH skipped this piece but I want to try it. Unfortunately, it doesn't look like Linux Alpine has
+a cgroup-tools container, so I may have to try setting up cgroups manually which seems like an interesting challenge.
+
+You can use the alpine package manager to install htop though:
+
+apk add htop
+
+Note that when running htop I'm seeing all 16GB of my memory available which is surprising. After
+all I'm already one level deep inside an Alpine container.
+
+Running cgroups manually (https://www.redhat.com/sysadmin/cgroups-part-three):
+
+- By default the cgroup directory structure will be created in /sys/fs/cgroup (confirmed)
+- You could recreate the folder structure by hand but in our case Alpine does have the struture already:
+/my_cgroups
+├── <controller type>
+│   ├── <group 1>
+│   ├── <group 2>
+│   ├── <group 3>
+
+- you would then mount the cgroups into those folders (mount -t cgroup -o memory none /my_cgroups/memory)
+- you could create your own cgroups (mkdir -p /my_cgroups/cpu/{user1,user2,user3})
+- The directories are then automatically populated by the controller
+- Tutorial uses cat /dev/urandom to create a load on the cpu
+- You can change cpu.shares to adjust priority for processes (echo 2048 > user1/cpu.shares)
+- To add a process to a cgroup add the desired PID to the tasks file:
+echo 2023 > user1/tasks
+- It actually looks like in this case, cpu shares are determined by top-level cgroup priority. So if user1 has
+priority 2048, user2 has priority 768 and user3 has priority 512 user one will get:
+
+2048/(768+512+2048) = 61.5% of CPU time:
+
+I'm going to try to set this up in alpine linux (NOTE: this should be done in the top Alpine container, right below bare metal):
+
+1). cd into /sys/fs/cgroup
+
+2). create a cgroup we want to use for the manual docker container we'll run:
+
+mkdir -p cpu/manual_docker
+
+3). ls into cpu/manual docker to confirm that it is automatically populated by the controller
+
+4). create a priority for the cgroup:
+
+echo 256 > cpu/manual_docker/cpu.shares
+
+5). I'm not entirely sure what I'm doing, but in the BH video he runs the following command:
+
+cgset -r cpu.cfs_period_us=100000 -r cpu.cfs_quota_us=$[ 5000 * $(getconf _NPROCESSORS_ONLN) ] sandbox
+
+and in our manual_docker cgroup there is a cpu.cfs_period_us and a cpu.cfs_quota_us
+the period is alread set to 100000 and quota is set to -1. I'm going to try to set it to 5000.
+Not sure how all this affects the cpu share in the end
+
+TODO: Look into depth how to set up the cpu share properly
+
+run:
+
+echo 5000 > manual_docker/cpu.cfs_quota_us
+
+
+NOTE: I'm not sure how to properly set up the memory cgroup as well. I was under the impression that you
+could use one cgroup to set the cpu and the memory at the same time, but with the file structure in place
+it seems a little uncertain (could try to create a new manual_docker folder under the /sys/fs/cgroup/memory
+directory. It's a container so it seems like a pretty safe thing to try).
+------------------------------------------------------------------------------------------------------------------------------------
+
+
+12). Now recap the situation so that you don't do anything stupid because it's feeling like inception at the moment:
+
+    - You have ubuntu on your actual computer
+    - You are running an unusual docker container (docker-host) that tunnels out to connect to your actual computer so that
+    when you run docker ps from within that container it actually sees itself (this is my current limited understanding)
+    - You are running an Alpine Linux container from within the docker-host container. It is doing nothing at the moment but
+    you used it to extract its state/linux directory setup and you are now ready to run a new version of it manually.
+    - in order to run it manually you set up a cgroup for it manually and the next step is to run the container manually
+    using chroot and unshare.
+    - you will then want to start another shell in the docker-host container to view its PID and assign the docker-manual cgroup
+    to it.
+    - if you manage to do all that you deserve a pat on the back
+
+    a). So at this point we are ready to run the manual docker image with:
+
+    unshare --mount --uts --ipc --net --pid --fok --user --map-root-user chroot /container-root sh
+
+    b). Next start a new shell in the docker-host alpine container:
+
+    sudo docker exec -it docker-host /bin/sh
+
+    Note: that in alpine the shell isn't bash it's ash
+
+    In that shell we can docker ps and grab the container ID of the container that we are trying to manually run (my-alpine)
+
+    c). Next we're going to add the sh (ash) process we just created to the manual_docker cgroup we set up:
+
+    echo 135 > manual_docker/tasks
+
+    d). within our manual container, let's try running a command that would normally pin the cpu:
+
+    yes > /dev/null
+
+    Confirmed success! It pinned the cpu available in the manual container but from the outside it was only using 5% cpu!
+
+    e). To try out limiting the RAM usage, I created a new manual_docker directory in /sys/fs/cgroup/memory. Next I
+    added ran the following command to limit the memory usage to 80M:
+
+    echo 83886080 > memory.limit_in_bytes
+
+    and added the process ID of the manually run container to the memory cgroup like so:
+
+    echo 136 > tasks
+
+    f). In order to see if it worked, pin the RAM:
+
+    yes | tr \\n x | head -c 104857600 | grep n
+
+    confirmed that the ram was not pinned. It's hard to tell if it really worked because 8M/16G is 0.5%
+    I'm going to increase the ram allowance so that we end up with 2% being used by the process (0.02 * 16000000000 = 32000000)
+    I think the actual value in bytes is 335555320
+
+    It didn't seem to work. Even after restarting the manual container, the RAM pinning command actually stops running very
+    quickly. It runs for a quick second and immediately shuts down. Not sure what's going on, but it's possible that it
+    is not being limited by the cgroup and some automatic process comes to shut it down before it crashes everything? Seems
+    a little unlikely. Not sure what's happening here.
+
+    TODO: Follow up
+----------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------
+TODO: Figure out how to properly start and stop the docker daemon.
+It looks like you can run:
+
+sudo docker info
+
+or
+
+sudo systemctl is-active docker
+
+to confirm whether or not the docker daemon is running. You can also check the process list for dockerd.
+
+Apparently on a typical install, the docker daemon (dockerd) is started by a system utility and not manually
+by a user. This makes automatically restarting docker on reboot easier. That being said, I'm not sure I want
+docker running in the background at all times for no reason.
+
+To manually start the docker daemon you can simply run "dockerd" in the forground.
+
+
+To configure the docker daemon you can either use flags when alling dockerd manually or
+modify the JSON config file. Don't overlap flags and config file.
+
+For the JSON file you can create it at
+
+/etc/docker/daemon.json
+
+to view docker data more generally go to
+
+/var/lib/docker
+
+To enable/disable dockerd from running on boot run the following commands:
+
+sudo systemctl enable docker.service
+sudo systemctl enable conatinerd.service
+
+or
+
+
+sudo systemctl disable docker.service
+sudo systemctl disable conatinerd.service
+
+To see whether or not docker.service is enabled or disabled, i believe that you can run this command:
+
+
+sudo systemctl list-unit-files --state=disabled | grep docker
+-----------------------------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------

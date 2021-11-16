@@ -1,0 +1,397 @@
+Containers are basically made up of 3 things: chroot/linux jails, namespaces/cgroups, and kernels
+
+
+CHROOT (LINUX JAILS)
+
+
+1). Because he's on MacOS he runs "docker run -it --name docker-host --rm --privileged ubuntu:bionic" to spin up an Ubuntu container
+
+2). He checks which Ubuntu distribution he's running with "cat /etc/issue"
+
+3). Shows that it woks on Powershell
+
+4). Eventually we'll run a script to set things up for us
+
+5). Goal is to run a process but limit it to one directory:
+
+  a). "mkdir my-new-root" this is the directory we're going to isolate
+
+  b). "cd my-new-root"
+
+  c). "chroot . bash" will error because the bash command doesn't exist in the my-new-root directory.
+  Note chroot is related to the "linux jail" concept. You're running a command or shell with a special root directory that can't access
+  directories above what it perceives to be the root directory (in this case "my-new-root)
+
+  d). In order to run bash from this "jailed" directory we need to make copies of bash (and other useful commands) and a bunch of libraries
+  inside the isolated root directory (my-new-root):
+
+    1). "mkdir my-new-root/bin"
+
+    2). "cp /bin/bash my-new-root/bin" Note that even though bash now exists in this directory, you cannot run it yet because you are missing
+    a bunch of libraries that it needs. To add the relevant libraries:
+
+      a). "ldd /bin/bash" Note that ldd prints shared libraries that are required for the program/object
+
+      b). copy required libraries and mimic the directory structure:
+
+        1). "mkdir my-new-root/lib{,64}" Note the {} trick to create two directories at once
+
+        2). "cp /lib/x86_64-linux-gnu/libtinfo.so.5" ... "/my-new-root/lib" and do the same with /my-new-root/lib64
+
+    At this point "chroot my-new-root/ bash" should now work, but "ls" won't work. You need to repeat this copying process for any commands
+    that are not inherent (pwd still works for example)
+
+  e). "exit" leaves the chrooted environment
+
+  f). to make "ls" work:
+
+    1). "cp /bin/ls my-new-root/bin/"
+
+    2). then copy the required libs that can be found with "ldd /bin/ls" in my-new-root/lib and my-new-root/lib64
+    (e.g. "cp /lib/x76_64-linux-gnu/libselinux.so.1 my-new-root/lib for all the libs that are not already there)
+
+  g). when you chroot back into bash in the jailed directory you should now be able to use "ls"
+
+-------------------------------------------------------------------------------------------------------------------------------------------
+
+Exercise:
+
+1). add "secret" file to root folder "echo "my secret recipe" >> secret.txt
+
+2). ls will show the "secret" file but you can't cat it. So ldd /bin/cat and copy relevant libraries and the actual /bin/cat binary to new root directories
+
+NOTE: you can ignore LDD results that don't have a fully qualified path but BH doesn't know why.
+
+
+
+NOTE: breaking out of chroot. It actually seems pretty easy to break out of a chroot jail so long as you have the ability to access chroot yourself, and have full permisions. I tested this by running the C code below and it worked. The basic idea is that when you call on chroot the second time, it overrides the first chroot call and allows to switch your root dir to a dir outside your jailed environment. There's something else going on too because when i tried to do this manually (without
+compiling and executing the C code, but instead just chrooting to a directory outside of the jailed environment, i received an error).
+
+https://medium.com/@saschagrunert/demystifying-containers-part-i-kernel-space-2c53d6979504
+
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(void)
+{
+    mkdir(".out", 0755);
+    chroot(".out");
+    chdir("../../../../../");
+    chroot(".");
+    return execl("/bin/bash", "-i", NULL);
+}
+
+We create a new jail by overwriting the current one and change the working directly to some relative path outside of the chroot environment. Another call to chroot might bring us outside of the jail which can be verified by spawning a new interactive bash shell. This may be a reason why in practice pivot_root is used instead of chroot.
+
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+NAMESPACES:
+
+If you take the example of running a server in your home and selling space to clients, chroot'd environments will limit the ability of clients looking at each other's files which is a good start, but it doesn't stop clients from seeing all the process going on on the computer. A malicious client could kill
+processes, unmount filesystems and potentially even hijack processes.
+
+Namespaces allow you to hide processes from other processes. If you split up clients giving them their own chroot'd environments and different sets of
+namespaces, the clients can't see each other's processes (and guessing process Is will be impossible since the PIDs are different in the different
+environments). Note that this is just the UTS (UNIX timesharing) namespace which is just one among many namespaces that will help containers stay isolated.
+
+(Namespaces are a feature of the Linux Kernel that partitions kernel resoures such that one set of processes seeson set of resources while another set
+of processes seeas a different set of resources.)
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+NOTE: I tried adding the ps command to the chroot'd environment and received this message after moving the binary and all the libraries "Error, do this: mount -t proc proc /proc".
+
+From the man page:
+The proc filesystem is a pseudo-filesystem which provides an interface to kernel data structures.  It is commonly mounted at /proc.  Typically, it
+       is mounted automatically by the system, but it can also be mounted manually using a command such as:
+
+           mount -t proc proc /proc
+
+       Most of the files in the proc filesystem are read-only, but some files are writable, allowing kernel variables to be changed.
+
+
+But of course, the mount command is not found! I added mount to the chroot environment and got the following error
+"mount: /proc: mount point does not exist." That being said, I think he was actually running ps from outside the chroot'd environment, so I'm going to
+drop it for now.
+
+Follow up: if you create the proc dir at the root level of the jailed environment, you can actually then use the ps command successfully after running mount -t proc proc /proc. (via: https://medium.com/@saschagrunert/demystifying-containers-part-i-kernel-space-2c53d6979504)
+
+Also, BH says later that we have to mount proc and sysfs so that environment can access the file system and process system. Ubuntu will do all of this for you automatically, but within our environment, we have to do it ourselves (tell our bash where to find the stuff it needs).
+
+
+Also as a side note, when I manually configured the environment (without running the debootstrap command), something causes me not to be able to delete things properly when using the bash shell in the chroot'd environment. This is fixed when using the debootstrapped environment.
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+
+DEMO OF EXPOSED PROCESSES:
+
+1). chroot in a terminal into our environment
+
+2). In another terminal run docker exec -it docker-host bash (just going to run another zsh terminal since I'm on linux)
+
+3). Run "tail -f /my-new-root/secret.txt &" in #2. This will start an infinitely running process in the background.
+("&" makes it run in background and tail just prints last ten lines of a file)
+
+4). Run ps (ps aux to show more) to see the process list in #2 and see the tail process running. Copy the PID for the tail process.
+
+5). In #1, the chroot'd shell kill <PID you copied>. This will kill the tail process from inside the chroot'd environmnet. This means that the chroot'd env
+isn't isolated enough.
+
+
+I ran this demo and it worked correctly.
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+DEMO OF EXPOSED NETWORK INFO:
+
+Along with processes being exposed, network information is exposed as well.
+
+1). mkdir /sys
+
+2). mount -t sysfs sys /sys
+
+3). ls /sys/class/net
+
+I ran this demo and was able to expose some interfaces
+
+TODO: revisit  mounting /proc and /sys
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Solution:
+
+So installing every single command to our chroot environment manually is a pain, but you can install a package that installs a bunch of things for you
+automatically:
+
+1). sudo apt-get update
+
+2). sudo apt-get install debootstrap
+
+3). debootstrap --variant=minbase focal /better-root
+(most minimum amount of tools for focal release of ubuntu)
+
+after debootstraping you can chroot into the better-root directory and have access to a bunch of commands that you might use. Interestingly enough
+it also solve this issue i was having where I couldn't properly delete commands in the chroot'd bash terminal.
+
+
+Unshare:
+
+We are telling unshare what we want to unshare from this new process we're creating (network, UTF process managing system, file system)
+
+unshare --mount --uts --ipc --net --pid --fork --use --map-root-user chroot /better-root bash
+
+These are all namespaces:
+
+
+
+Mount (mnt) controls mount points (filesystem).
+
+From demystifying containers blog:
+
+With the mnt namespace linux is able to isolate a set of mount points by a group of processes. A great use case of the mnt namespace is to create environments similar to jails, but in a more secure fashion. This is done via an API function call or the unshare command line tool. The actual memory being used for the mount point is laying in an abstraction layer called Virtual File System (VFS), which is part of the kernel and where every other filesystem is based on. If the namespace gets destroyed, the mount memory is unrecoverably lost. The mount namespace abstraction gives us the possibility to create entire virtual environments in which we are the root user even without root permissions.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+UTS The Unix Time-Sharing namespaces allow a single system to appear to have a different host and domain names for different processes.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Interprocess Communication (ipc) IPC namespaces isolate processes from the SysV style inter-process comunication.
+One use case of this namespace would be to separate the shared memory (SHM) between two processes to avoid misusage. Instead, each process will be able to use the same identifiers for a shared memory segment and produce two distinct regions. When an IPC namespace is destroyed, then all IPC objects in the namespace are automatically destroyed, too.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+Process ID (pid) provides proesses with an independent set of process IDs fom other namespaces.
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+Network (net) Network namespaces virtualize the network stack.
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+User ID (user) User namespaces are a feature to provide both privilege isolation and user identification segregation across multiple sets of processes
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+map-root-user
+fork is ?
+
+TODO: follow up. There is a lot to learn wrt each namespace
+
+
+
+
+After running bash in the chroot'd and unshared environment with:
+
+ 1). "unshare --mount --uts --ipc --net --pid --fok --user --map-root-user chroot /better-root bash"
+
+you can:
+
+2). "mount -t proc none /proc" and "mount -t sysfs none /sys" and "mount -t tmpfs none /temp"
+
+and then
+
+3). run "ps aux" inside that environment and then outside of it to see that you can no longer see processes outside your chroot'd unshared environment (host can still see and kill everything in the child process/containerized env)
+
+So chrooting was about unsharing the file system and namespaces are about unsharing/controlling capabilities from the processes run in the environment.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+CGROUPS (CONTROL GROUPS)
+
+The last core component of containers that we are going to be looking at are cgroups/control
+groups. They are more recent additions than chroot and namespaces (which are part of the linux
+kernel). They were created at google, and they allow us to limit the resurces a certain process
+takes.
+
+We've "solved" (not really but we'll pretend) the security issues of a shared filesystem with
+chroot, a whole host of concerns (killing someone else's process, interfering with the network,
+modifying users, etc.) with the unshare,
+and now our goal is to distribute our computer's resources (cpu cores, RAM, bandwidth, etc.) to
+different clients in such a way that if one person writes some code that would otherwise tax the
+resources so much that the computer would crash, it would only affect their environment
+(container), and all the other clients would be able to keep working.
+
+NOTE: Most containers are actually run within VMs (multiple levels of virtualization)
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+CGROUP DEMO:
+
+1). install cgroup tool:
+
+apt-get install -y cgroup-tools htop
+
+2). run htop to see what resources you have access to (in BH case he's already in a container that
+is already running a cgroup to limit his resources so he only had 2/6 of his cores available, and
+~2GB or RAM)
+
+3). create a new cgroup caled sandbox with:
+
+cgcreate -g cpu,memory,blkio,devices,freezer:/sandbox
+
+You are telling the group what you want to limit (e.g. cpu, memory, etc.) but not how yet.
+
+
+4). Start up your chroot'd unshared environment with:
+
+unshare --mount --uts --ipc --net --pid --fork --user --map-root-user chroot /better-root bash
+
+
+5). From outside your containerized environment look at the PID for the containerized bash shell.
+Do this with ps aux and note down the PID for the next step.
+
+
+6). Assign the cgroup we created (sandbox) to the containerized bash shell using it's PID:
+
+cgclassify -g cpu,memory,blkio,devices,freezer:sandbox 7607
+
+Replace 7607 with your PID. If you have mulitiple bash shells running it will be the one with the PID sequentially right after the unshare process (since both unshare and bash processes are run in the same command).
+
+NOTE: That in linux since every process spawns a process tree and can have child processes, the
+cgroup will apply to the process you selected with the PID AND all the child processes of the
+process.
+
+7). To view a list of what the cgroup is applying to (presumably child process will be added
+automatically), you can cat the relevant file using:
+
+cat /sys/fs/cgroup/cpu/sandbox/tasks
+
+NOTE: you could directly modify this file instead of calling cgclassify
+
+
+8). To view the priority level of the control group. If you have two competing control groups
+presumably assigned to the same process, it would check the priority to decide which set of limits
+should apply. You can view the relevant file using:
+
+cat /sys/fs/cgroup/cpu/sandbox/cpu.shares
+
+9). To actually set the limits on CPU resources for the cgroup you can run:
+
+cgset -r cpu.cfs_period_us=100000 -r cpu.cfs_quota_us=$[ 5000 * $(getconf _NPROCESSORS_ONLN) ] sandbox
+
+NOTE: he actually makes a mistake with this command in the video and forgets to write _us for the cfs_period_us
+This may explain why the cpu limiting didn't seem to work on my first test
+These commands correspond to files in /sys/fs/cpu for the cgroup we created. I noticed this while I was
+trying to build a cgroup manually (without cgroup-tools) in the next section for Linux Alpine.
+
+Basically this is saying that any process in the process tree we assigned the sandbox cgroup to
+can only use 5% of the available processing resources in total. I think it's saying something like
+"for every 100000 ms of cpu clock you can us 5000ms for the processes in the tree". Something
+along those lines.
+
+TODO: Follow up
+
+
+10). To set limits on RAM usage run the following command:
+
+cgset -r memory.limit_in_bytes=80M sandbox
+
+This will limit our process tree to only using 80MBs of RAM
+
+TODO: Confirm that if you give it a number greater than available RAM, that it will just use 100% of available RAM. Also, is there a
+way to set this as a percentage?
+
+
+11). To see these limits after setting them run:
+
+cgget -r memory.stat sandbox
+
+hierarchical_memory_limit will show us how many bytes our cgroup will limit the process tree to
+and hierarchical_memsw_limit is the all the memory is available in total (unlimited by the cgroup)
+
+
+12). To demo the limits working, we're going to run a command that would pin (take up 100% of) the cpu
+if it were run without cgroup limiting resource draw. So within the chroot'd unshared and now cgroup limited
+environment we run the following command (not BH does not recommed running a fork bomb, because it would still crash
+out computer):
+
+yes > /dev/null
+
+The yes command just prints y infinitely and here we are printing it into /dev/null which is just the void
+(we can direct it safely there and nothing bad will happen). This will effectively run taking up as much cpu
+as it can.
+
+
+13). If we run htop we can see a sizeable but limited amount of the cpu being taken up by
+the containerized bash process. If this were run outside of the containerized environment ~100%
+of the cpu would be in use. Use htop to see this.
+
+
+14). To pin the memory we can run:
+
+yes | tr \\n x | head -c 104857600 | grep n
+
+Not exactly sure what this is doing but it's using up all available RAM. If you check htop from outside the
+containerized environment, you can see that the total memory usage goes up but that the containerized bash
+process is limited (not taking up 100% of RAM).
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+This is essentially how docker works, but there's a lot more to it than chroot, namespaces, and cgroups, but this
+was the basic idea:
+
+1). chroot/linux jail to prevent users from seeing each other's files.
+
+2). namespaces/unshare to hide all kinds of info that users shouldn't have access to (killing processes running outside
+their environment, finding network interfaces that they shouldn't see, etc.)
+
+3). cgroups to limit how much resources an environment can consume.
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+IMPORTANT: Somewhere along the line of following this tutorial, something got messed up with the mounts (probably when I mounted
+proc or sysfs). I really don't understand what happened, but as a result, I started getting permission errors when trying to
+unmount proc and other things. I received permission errors when trying to run sudo unshare chroot commands (I noticed that
+unshare wasn't hiding my processes like i had expected it to), and when I tried removing and rebuilding the better-root folder,
+I couldn't delete it nor could i use debootstrap.
+
+Eventually I found this post https://superuser.com/questions/620003/debootstrap-error-in-ubuntu-13-04-raring after receiving the
+error:
+
+Cannot install into target '/home/.../rootfs' mounted with noexec or nodev
+
+The solution was to run the following command:
+
+sudo mount -i -o remount,exec,dev /home/user
+
+TODO: Revisit and dive into mounting
