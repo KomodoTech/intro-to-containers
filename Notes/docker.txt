@@ -257,9 +257,212 @@ To see whether or not docker.service is enabled or disabled, i believe that you 
 sudo systemctl list-unit-files --state=disabled | grep docker
 -----------------------------------------------------------------------------------------------------------------------------
 
+
+RUNNING DOCKER IMAGES WITH DOCKER
+
+The docker run command is the most useful command for developers.
+
+DOCKER BASICS
+
+1). Run the latest alpine container:
+
+docker run --interactive --tty run alpine
+
+(automatically runs alpine:latest)
+
+
+
+2). To view what you are running:
+
+cat /etc/issue
+
+
+Remember that containers are ephemeral and if you don't back things up they will be gone when you quit the container.
+
+3). docker run -it alpine:3.10
+will put you into the interactive shell. If you don't use the -it flag it will run the container and immediately close
+That being said you could run a specific command inside a container and then close when the command finishes execcution:
+
+docker run alpine:3.10 ls
+
+This will spin up a container, run ls, print to your terminal and exit the container. NOTE: that order matter or this
+command
+
+
+4). docker run ubuntu:bionic cat /etc/issue
+This will show that the container runs ubuntu bionic and then shuts down.
+
+
+5). It's very easy to have too many images on your computer so run:
+
+docker image prune
+
+to free up space and delete your images (you'll lose everything you did with those containers)
+
+
+6). Spits out the hash of the running container and runs the container in the background (as opposed to foreground like before)
+
+docker run -it --detach ubuntu:bionic
+
+
+7). Show what containers are currently running with
+
+docker ps
+
 ----------------------------------------------------------------------------------------------------------------------
+
+NODE WITH DOCKER:
+
+1). run the node REPL (Read, Evaluate, Print, Loop which is the language shell you enter in when you
+run node interactively) from the official Node linux which was created for Debian:
+
+docker run -it node:12-stretch
+
+12-stretch means Node 12 and Debian Stretch (which is Debian 9 or something of that nature)
+
+since we didn't specify a specific command that we wanted Node to run, but we also didn't just run an interactive
+bash shell, when we exit the Node REPL, it will exit out of the container.
+
+You can drop into the bash container with:
+
+docker run -it node:12-stretch bash
+
+From there you can cat /etc/issue or run Node (that way when you exit the Node REPL you don't immediately
+exit and lose the container)
+
+NOTE: If you wanted to check what version Linux your Node container is running on you can run:
+docker run -it node:12-stretch cat /etc/issue
+
 ----------------------------------------------------------------------------------------------------------------------
+
+TAGS AND CHOOSING CONTAINER VERSIONS
+
+When you're deciding what container version to use, you can look at its docker hub page. So fo example,
+if you're looking or a Node container, you an go to https://hub.docker.com/_/node and you will see a bunch of
+entries. Each row contains tags that point to the same container even though they have different names.
+There's no real strict syntax/format for these tags.
+
+When you're trying to choose one, a good rule of thumb is to choose the latest supported version (LTS). For a Node
+container you would use the LTS of Node and the LTS of docker. That being said, given that you want to freeze you
+setup in time so that it doesn't break when a new LTS is released, it's better not to use the lts tag.
+
+So instead of running "docker run -it node:lts", you would run "docker run -it node:12-stretch" or whatever
+the latest stable version of node and debian are. If you're just messing around you can use the experimental
+latest version of the container (tagged as "latest"), but don't do this if you're shipping something.
+
+NOTE: If you look at the following tag "12.13.1-stretch" it means use the latest stretch release of Debian (there
+could be newer versions of Debian), and 12 is the node major version, 13 is the minor version, and 1 is the patch. If you use the 12.13-stretch tag, the patches will upload automatically, and if you use the 12-stretch tag you'll get updates for the major version and patches automatically. If you trust the container creater usually it's safe to just specify the major version.
+
+You also have container versions that try to only package the bare bones (slim versions), and some very specialized
+ones like chakracore (the deprecated  microsoft edge equivalent to the chromium v8 engine).
+
 ----------------------------------------------------------------------------------------------------------------------
+Docker CLI
+
+1). Pull a container from docker hub and store/cache it on your computer (in this case we are asking for the
+implicitly latest version of a container jturpin/hollywood that can run the command "hollywood" that
+does all kinds of impressive looking but useless things on your computer. It's a gag that simulates
+the kind of things a hacker would do in a movie)
+
+docker pull jturpin/hollywood
+
+2). Run a command via an interactive container (-it means it won't quit immediately, and it's running
+the hollywood command in the jturpin/hollywood container)
+
+docker run -it jturpin/hollywood hollywood
+
+3). Output useful information regarding a specific container (prints out info like the container's hash,
+tags, the command it runs, environmental variables, the entrypoint, etc.)
+
+docker inspect node:12-stretch
+
+4). Run container (and command) in detached mode (running in background):
+
+docker run -dit jturpin/hollywood hollywood
+
+5). View info on containers/docker processes that are currently up:
+
+docker ps
+
+6). Pause a container (freezing all process trees):
+
+docker pause [CONTAINER ID GOES HERE]
+
+7). Unpause a container:
+
+docker unpause [CONTAINER ID GOES HERE]
+
+8). Kill a container:
+
+docker kill [CONTAINER ID GOES HERE]
+
+9). List out all the docker processes/containers but only their IDs
+
+docker ps -q
+
+10). Kill all containers at once:
+
+docker kill $(docker ps -q)
+
+11). Run a command/process (in this case "ps aux") in an existing container
+(docker run starts a new container):
+
+docker exec [CONTAINER ID OR CONTAINER NAME] ps aux
+
+NOTE: to go back into the pre-existing container's shell you could execute "docker exec -it [CID/NAME] bash"
+
+12). View all the changes in the history of a container:
+
+docker history node:12-stretch
+
+13). Get information about the container you are running. If you are ssh'd into a VM running in the cloud
+this is useful to get information about the host computer you are on:
+
+docker info
+
+14). See all process that are going on in a container:
+
+docker top [CID/HASH/NAME]
+
+15). View all containers on your machine:
+
+docker ps --all
+
+16). View logs for a container
+
+docker logs [CID/NAME/HASH]
+
+17). Delete container (not the image):
+
+docker rm [CID/NAME/HASH]
+
+18). Delete image:
+
+docker rmi [CID/NAME/HASH]
+
+19). Remove all stopped containers (not images):
+
+docker container prune
+
+20). Remove all (non-running?) images:
+
+docker image prune
+
+21). List all images:
+
+docker image list
+
+22). Restart a docker image. It sends a Restart/Terminate signal. If that signal isn't accepted after a few
+seconds (10?) docker forces a restart:
+
+docker restart [CID/HASH?NAME]
+
+23). Search docker hub for containers (in this case python containers):
+
+docker search python
+
 ----------------------------------------------------------------------------------------------------------------------
+
 ----------------------------------------------------------------------------------------------------------------------
+
 ----------------------------------------------------------------------------------------------------------------------
