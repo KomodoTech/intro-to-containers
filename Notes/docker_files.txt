@@ -1,0 +1,176 @@
+BUILDING A SIMPLE DOCKERFILE:
+
+1). Create a file caled Dockerfile inside your project directory
+
+2). Base your Docker image on a "base container" (so you're nor reinventing the
+wheel). In this case we are using node:12-stretch as a base:
+
+FROM node:12-stretch
+
+3). Tell it what to do when it starts up:
+
+CMD ["node", "-e", "console.log(\"Hello World\")"]
+
+NOTE: -e means immediately execute the string of code (within the node environment)
+You can run: node -e "console.log(\"Hello World\")" within any environment that
+has node and it will work as expected.
+
+NOTE: docker run -it node:stretch-12 will drop you into the node REPL. That's what
+the node:12-stretch dockerfile is set up to do via the CMD instruction. We're
+overriding that call to the REPL with out custom CMD instruction. The last CMD
+found in the dockerfile will be the one that is executed, so if you have two
+CMD instructions in your dockerfile like so:
+
+CMD ["node", "-e", "console.log(\"hello"\)"]
+CMD ["node", "-e", "console.log(\"hello again"\)"]
+
+when you run your custom container, "hello again" will print, not "hello"
+
+
+NOTE: You don't need to specify a CMD line (if you are basing your container off
+of another one at least). If you don't it will run the default CMD instruction.
+You can also run commands that you specify that overrun the CMD instruction like
+you would any other conatiner (docker run [CID] ls)
+
+4). From the directory your dockerfile is sitting in you can run:
+
+docker build .
+
+It will assume that you named your dockerfile Dockerfile (if not you can specify)
+
+5). To run your custom container:
+
+docker run [IMAGE ID]
+
+NOTE: you can find the Image ID by running "docker image list" or "docker
+images"
+
+6). Give your container a custom tag:
+
+docker build --tag my-node-app .
+
+NOTE: this will default the tage to my-node-app:latest
+It's better to version your containers (my-node-app:1.0.0)
+
+7). When you make new versions of the container, it stores the history and you
+can run older versions:
+
+    1). docker build --tag my-node-app:1
+    2). change the CMD slightly so it prints something different now
+    3). docker build --tag my-node-app:2
+    4). docker build --tag my-node-app:1
+
+doing this you can see that you can run different versions of your container
+
+NOTE: That when rebuilding the container, the image ID appears to stay the same
+until you change the tag at which point a new image and IID is generated.
+
+----------------------------------------------------------------------------------
+
+BUILDING A NODE.JS APP:
+
+Let's say we have a basic node server (index.js):
+
+// Import the http core module
+const http = require("http");
+
+// Create an http server on port 3000
+http
+    .createServer(function(request, response) {
+        // Upon receiving a request print that you received it
+        console.log("request received");
+        // Display a custom response
+        response.end("omg hi", "utf-8");
+    })
+    .listen(3000);
+
+console.log("server started");
+
+
+running that locally with "node index.js" you'll see the "server started" printout
+and then if you go to localhost:3000 in the browser, you'll see "omg hi" displayed on the page.
+
+NOTE: if you look at what is printed out on the terminal, you should see:
+
+server started
+request received
+request received
+
+the reason why there are two request received printouts is that running index.js
+from the browser creates two requests. One of them is requesting the favicon to
+display.
+
+
+We can also package this node code into a custom container that we could use to
+run this server:
+
+1). Create a Dockerfile in the same directory as index.js
+
+2). In that Dockerfile:
+
+FROM node:12-stretch
+
+COPY index.js index.js
+
+CMD ["node", "index.js"]
+
+
+NOTE: The COPY command copies the source (first path) file into the container at
+the destination path (second path). If we didn't do this, our container would not
+be able to access index.js.
+
+
+3). Build the custom container:
+
+docker build -t my-node-app .
+
+This will override the previous container we made but that's fine
+
+NOTE: The output of this command shows that during the build command, docker
+is actually running each instruction sequentially and creating a valid container
+for each step.
+
+
+4). If you run the node server we created from within the container we made:
+
+docker run my-node-app
+
+We see that if we go to localhost:3000 in the browser, the browser cannot establish
+a connection. This is because by default our container is not given access to the
+network (certain namespaces are unshared).
+
+You can also see that you can't CTRL+C to end the Node server in the container.
+This is because Node does not respond to these kinds of signals (SIGINT in this
+case). When we press CTRL+C we're telling docker to pass the SIGINT along to
+Node and Node does not process it. There are a couple of ways to solve this
+problem:
+
+    1). Deal with it within the Node index.js file we created (process.on
+    ('SIGTERM') end the server)
+
+    2). Open another terminal and docker kill the process
+
+    3). When you run your node app within the container use the --init flag:
+
+    docker run --init --rm my-node-app
+
+    This will run the container with a module called tini which will proxy the
+    node process and will deal with the SIGTERM/SIGINT signals for you (the --rm
+    flag just removes the container once it runs). If you want to run tini in prod
+    it's better to go into you Dockerfile, install tini and then run Node from tini
+    so that it's built into the container.
+
+    TODO: try to do this right both with tini and dealing with SIGs in index.js
+
+
+5). To run the container so that it can access port 3000 we run:
+
+docker run --init --rm --publish 3000:3000 my-node-app
+
+NOTE: you could route ports like 3000:8000 (ACTUALLY i tried routing like this
+and it didn't work). Allowing port access is probably something you want to be
+doing at runtime, so using publish is probably a better idea than using the expose
+instruction in the Dockerfile in this case
+
+
+
