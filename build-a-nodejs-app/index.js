@@ -1,15 +1,33 @@
-//import the core http module
-const http = require("http");
+'use strict';
+const process = require('process');
+const http = require('http');
 
-// create an http server on port 3000
-http
-  .createServer(function(request, response){
-    // Upon receiving request print that you received it
-    console.log("request received");
-    // Display a custom response
-    response.end("omg hi", "utf-8");
+var server = http
+  .createServer((req, res) => {
+    console.log('Request received');
+    res.writeHead(200, {'Content-Type': 'text/plain'});
+    res.end('Hello World\n');
   })
-  .listen(3000);
+  .listen(3000, '0.0.0.0');
 
-console.log("server started");
+  console.log('server started\n');
+  // Confirm that this process is running with PID 1
+  console.log('PID = ' + process.pid);
 
+  var signals = {
+    'SIGINT': 2,
+    'SIGTERM': 15
+  };
+
+  function shutdown(signal, value) {
+    server.close(() => {
+      console.log('server stopped by ' + signal);
+      process.exit(128 + value);
+    });
+  }
+
+  Object.keys(signals).forEach((signal) => {
+    process.on(signal, () => {
+      shutdown(signal, signals[signal]);
+    });
+  });

@@ -163,6 +163,7 @@ problem:
     TODO: try to do this right both with tini and dealing with SIGs in index.js
 
 
+
 5). To run the container so that it can access port 3000 we run:
 
 docker run --init --rm --publish 3000:3000 my-node-app
@@ -172,5 +173,82 @@ and it didn't work). Allowing port access is probably something you want to be
 doing at runtime, so using publish is probably a better idea than using the expose
 instruction in the Dockerfile in this case
 
+--------------------------------------------------------------------------------------------
 
+DEALING WITH SIGNALS WITH DOCKER:
+
+The process of passing along signals in docker (at least when running node) is
+tricky. I tried adding code that would deal with signals inside of index.js:
+
+'use strict';
+const process = require('process');
+const http = require('http');
+
+var server = http
+  .createServer((req, res) => {
+    console.log('Request received');
+    res.writeHead(200, {'Content-Type': 'text/plain'});
+    res.end('Hello World\n');
+  })
+  .listen(3000, '0.0.0.0');
+
+  console.log('server started\n');
+  // Confirm that this process is running with PID 1
+  console.log('PID = ' + process.pid);
+
+  var signals = {
+    'SIGINT': 2,
+    'SIGTERM': 15
+  };
+
+  function shutdown(signal, value) {
+    server.close(() => {
+      console.log('server stopped by ' + signal);
+      process.exit(128 + value);
+    });
+  }
+
+  Object.keys(signals).forEach((signal) => {
+    process.on(signal, () => {
+      shutdown(signal, signals[signal]);
+    });
+  });
+
+
+Credit to:
+https://medium.com/@gchudnov/trapping-signals-in-docker-containers-7a57fdda7d86
+
+https://medium.com/@becintec/building-graceful-node-applications-in-docker-4d2cd4d5d392
+
+
+This code works great when running node locally outside of a container. It handles signals
+does what you would expect. Unfortunately, when you run index.js from a container the
+signal is never passed through properly. I believe that when we run the container as it's
+built initially, the Node command running the http server is running with PID=1. It seems
+that whatever command is in the CMD=[]; line in the dockerfile/executed first has PID=1
+and I need to look into why this is causing issues (research online seems to point that it does).
+In order to see whether or not the PID made a difference I tried the following (not sure this
+is actually sound logic):
+
+1). Created a new version of my-node-app container where in the dockerfile i commented out
+the CMD that runs the index.js and just run bash instead.
+
+2). I ran the container in -it mode so that I could launch the server manually:
+
+docker -it --rm my-node-app:1.1.0
+node index.js
+
+3). In my index.js code I print out the PID, but I can also just run ps aux. Using that PID,
+I passed a SIGINT signal to the node process running within the modified node container:
+
+docker exec [CONTAINER NAME] kill -SIGINT [PID of node index.js running inside the container]
+
+This worked and the signal was handled as specified in index.js. Given that the docker
+exec command to kill the process with SIGINT was run from outside the container, I assume
+that this mimics what happens when I try to CONTROL+C when running my-node-app version 1.
+The main difference is that in the first version, the http server is running on PID 1.
+Once again, I'm not sure that my assumptions are correct.
+
+
+https://hackernoon.com/my-process-became-pid-1-and-now-signals-behave-strangely-b05c52cc551c
 
