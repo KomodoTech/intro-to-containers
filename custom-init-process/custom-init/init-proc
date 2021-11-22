@@ -1,0 +1,33 @@
+package main
+
+import (
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+	"fmt"
+)
+
+func main() {
+	fmt.Println("Custom Init Go")
+
+	// Take the name of another process and execute it so that
+	// Main.go has PID=1 instead of the process we really want to run
+
+	cmd := exec.Command(os.Args[1], os.Args[2:]...)
+	err := cmd.Start()
+	if err != nil {
+		panic(err)
+	}
+
+	// We have to call wait on this process to avoid spawning zombie processes
+	// that will hang aound after execution. The kernel will maintain a minimal
+	// set of info about the zombie process (PID, termination status, resource
+	// usage information) and the process will consume a slot in the kernel process
+	// table which could eventually prevent the creation of new processes
+	err = cmd.Wait()
+	if err != nil {
+		panic(err)
+	}
+}

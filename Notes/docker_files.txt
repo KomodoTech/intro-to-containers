@@ -250,5 +250,96 @@ The main difference is that in the first version, the http server is running on 
 Once again, I'm not sure that my assumptions are correct.
 
 
-https://hackernoon.com/my-process-became-pid-1-and-now-signals-behave-strangely-b05c52cc551c
+    WRITING A CUSTOM INIT PROCESS:
+
+    https://hackernoon.com/my-process-became-pid-1-and-now-signals-behave-strangely-b05c52cc551c
+
+    1). Create a simple (python) script that just sleeps:
+
+    import subprocess
+    subprocess.call(["sleep", "100"])
+
+    2). Run it locally and kill it successfully with SIGTERM (kill [PID] command)
+
+    3). Create a simple dockerfile:
+
+    FROM ubuntu:20.04
+
+    RUN apt-get update
+    RUN apt-get install -y python
+    COPY mypy.py /srv/
+
+    CMD ["python", "/srv/mypy.py"]
+
+
+    4). Run the container interactively:
+
+    docker exec -it [CID] bash
+
+    5). Confirm that the process id of the python script is 1 using the ps command (ps -ef)
+
+    6). Try killing the python process (SIGTERM kill [PID] command)
+
+    7). Confirm that the process is still running despite the SIGTERM signal
+
+    NOTE: when runnning a similar setup with Go, it seems to let you SIGTERM.
+    A process running as PID 1 inside a container is treated specially by Linux: it ignores
+    any signal with the default action. As a result, the process will not terminate on SIGINT
+    or SIGTERM unless it is coded to do so. That being said, even when we tried defining
+    handlers in our index.js file, it didn't work so I'm not sure what's happening. Also
+    PID 1 is responsible for some things behind the scenes so killing it is not always
+    adviseable.
+
+    What we'd like to do instead is run a different process as PID 1 that proxy's signals from
+    outside the container into the script/server inside the container. We also want that
+    process to take care of some other standard initialization things.
+
+    As BH mentioned, Tini does this for us and ships with Docker.
+
+
+    NOTE: I tried writing my own init based off but I'm going to leave it alone for now and
+    come back to it. Just a few notes though:
+
+    1). The basic idea of the init process is that it will take the name of the process
+    we want to run as an argument and execute it for us. After starting the process it's
+    important to make a Wait call so as to avoid spawning zombie processes.A child that
+    terminates, but has not been waited for becomes a "zombie". The kernel maintains a
+    minimal set of information about the zombie process (PID, termination status, resource
+    usage information) in order to allow the parent to later perform a wait to obtain
+    information about the child. As long as a zombie is not removed from the system via a wait,
+    it will consume a slot in the kernel process table, and if this table fills, it will
+    not be possible to create further processes.
+
+    2). Then you have to write code in your init script to listen for signals and handle
+    them. The handler function will ultimately make some sort of system call to kill
+    the process via its PID.
+
+    3). PID 1 is also responsible for cleaning up Zombie processes and reparenting
+    orphaned processes (A -spawns-> B -spawns-> C. Now if B is killed C does not have a parent
+    process and PID 1 is responsible for making C's parent process A. When C exits, A receives
+    a SIGCHILD signal and is responsible for calling wait on C to clean up this Zombie process).
+
+    4). You also have to deal with the situation where process B failed to call Wait on C
+    and when B is killed, a Zombie C process becomes the child of A. This has to be dealt
+    with as well and seems a little tricky (lookup WNOHANG, SIGCHILD, wait4).
+
+    5). Sidenote:  To avoid getting hung up on tzdata config question
+    about geographic zone during docker build, I added ARG DEBIAN_FRONTEND=noninteractive to the
+    Dockerfile.
+
+--------------------------------------------------------------------------------------------------
+
+BACK TO THE NODE APP:
+
+For now, call:
+
+docker run --init --rm --publish 3000:3000  my-node-app
+
+in order to call tini and not have to worry about the signals. We also call publish to allow
+the node app to have access to port 3000.
+
+
+
+RUN NODE APP:
+
 
