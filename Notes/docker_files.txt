@@ -337,9 +337,240 @@ docker run --init --rm --publish 3000:3000  my-node-app
 
 in order to call tini and not have to worry about the signals. We also call publish to allow
 the node app to have access to port 3000.
+NOTE: docker-init will be PID=1 and the node index.js process will have a different PID
 
 
 
 RUN NODE APP:
+
+Generally it's a bad idea to let processes run as the root user unless they absolutely need to.
+That being said, it's usually the default behavior for containers. Some containers come
+with pre-made groups and users and others do not. Default Ubuntu does not, but Node comes with
+the node group and the node user, which we will want to be using. To change users, add the
+following to your dockerfile:
+
+USER node
+
+
+NOTE: if we put the USER node line before the COPY line, the file we wish to copy will be
+copied as the root user. This will mean that the node user won't be able to modify or execute
+the file we copied. To solve this, we want to chown the file (requires specifying a user and
+group):
+
+USER node
+
+COPY --chown=node:node index.js index.js
+
+
+NOTE: Instead of the COPY instruction you could use ADD. ADD allows you to reach out to the
+internet to bring in a file and also to unzip files (works with tar too). Generally, it's
+best to use COPY unless you have specific needs tht can only be addressed by ADD.
+
+We also want to create a directory structure that keeps things a bit more organized (currently
+everything is just being dropped into the root directory):
+
+WORKDIR /home/node/code
+
+This will make a code directory into the preexisting home directory of the node user (/home/node).
+The node user owns /home/code so this is a good place to put any code that we want it to run.
+
+CORRECTION: the directory you list under WORKDIR will actually be owned by root so this is not
+the way to do it. See next section
+-------------------------------------------------------------------------------------------------
+
+A MORE COMPLICATED NODE.JS APP (WITH DEPENDENCIES):
+
+One of the main advantages Docker is that we can freeze and maintain dependencies.
+
+If you want to create a project that has dependencies locally you can:
+
+npm init -y
+
+npm install [dependencies]
+
+NOTE: in this case we're installing @hapi/hapi and hapi-pino
+
+This will create the node_modules directory, a package.json and package-lock.json file
+
+This is all well and good for running things locally, but running an app with dependencies
+in a container is a little more complicated.
+
+With the following dockerfile you can run an app fine, but only because all the dependencies
+are already installed locally:
+
+FROM node:12-stretch
+
+USER node
+
+WORKDIR /home/node/code
+
+COPY --chown=node:node . .
+
+CMD ["node", "index.js"]
+
+
+If you running this in CI, the modules won't be there since we don't commit them. Also,
+node has the concept of native modules. Some of the modules are written in C and build for
+specific OS's. If you have a native module on one OS and then copy it into the container,
+it won't work properly. The solution is to run NPM install inside the container:
+
+
+FROM node:12-stretch
+
+USER node
+
+WORKDIR /home/node/code
+
+COPY --chown=node:node . .
+
+RUN npm ci
+
+CMD ["node", "index.js"]
+
+
+
+BEST PRACTICE: Running npm ci is better than npm install because it adheres to what's in the
+package-lock.json and it's also faster.
+
+NOTE: WORKDIR is always set by root, so the directory we're trying to install node modules
+to is going to be owned by root not the node user. This will cause permission errors. The
+solution is to create the directory as the node user:
+
+FROM node:12-stretch
+
+USER node
+
+RUN mkdir /home/node/code
+
+WORKDIR /home/node/code
+
+COPY --chown=node:node . .
+
+RUN npm ci
+
+CMD ["node", "index.js"]
+
+You can check the permissions on the copied files by running the ls -lsah command in the
+container:
+
+docker run --init --rm --publish 3000:3000 my-node-app ls -lsah
+
+
+NOTE: in the index.js file with the hapi setup, we have to specify host: "0.0.0.0" instead
+of localhost. Otherwise it won't work. Also, prettyPrint is deprecated and has been
+replaced with pino-pretty but I couldn't quite get it to work, so I just removed prettyPrint
+for now since the goal of these exercises is not to make the javascript work.
+------------------------------------------------------------------------------------------------
+
+EXPOSE VS PUBLISH:
+
+Instead of running --publish 3000:3000 you could add the instruction EXPOSE 3000 to your dockerfile
+you would then run:
+
+docker run --init --rm --detach -P my-node-app
+
+The -P would choose a port to map from 3000. So you would have to run:
+
+docker ps
+
+Then under PORTS you would find the port to navigate to in your browser. If you see:
+
+0.0.0:32768->3000/tcp
+
+you would know that docker has exposed what's on the container port 3000 to 32768 outside the
+container (?), so you would navigate to localhost:32768
+
+This tends to be less convenient than --publish so it's probably not worth doing.
+
+-------------------------------------------------------------------------------------------------------
+
+LAYERS:
+
+The order of instructions in a Dockerfile matters a lot because docker builds containers layer by layer.
+Docker caches the images built on instruction at a time so that upon rebuild it just rebuilds the container
+from the change onwards. So if we look at the following instructions:
+
+FROM node:12-stretch
+
+USER node
+
+RUN mkdir /home/node/code
+
+WORKDIR /home/node/code
+
+COPY --chown=node:node . .
+
+RUN npm ci
+
+EXPOSE 3000
+
+CMD ["node", "index.js"]
+
+
+If you make any change to the index.js file (say change the server should run on), Docker will
+rebuild the image from the COPY instruction, since a change has been made in the files in the
+current directory. It then keeps building by executing the next command which is RUN npm ci.
+What this means is that all the downloading of dependencies will happen again, even though we
+haven't changed anything in the node modules directory, package.json, or package-lock.json.
+
+Therefore, it's better to COPY the package.json and package-lock.json files over to the container
+first, then RUN npm ci within the container and only then copy the rest of the files. Next time
+something changes in the index.js file, so long as no changes were made with the packages/dependencies,
+all the node modules will be cached and docker will not have to download them again upon a rebuild:
+
+FROM node:12-stretch
+
+USER node
+
+RUN mkdir /home/node/code
+
+WORKDIR /home/node/code
+
+COPY --chown=node:node package-lock.json package.json ./
+
+RUN npm ci
+
+COPY --chown=node:node . .
+
+EXPOSE 3000
+
+RUN ["node", "index.js"]
+
+
+
+NOTE: BH says we need the slash at the end of the first copy to tell it to put it into
+the directory. One concern with caching the packages this way is that if a security patch
+comes out, the way that package-lock.json (and package.json) is built is with the "^" before
+the dependceny version:
+
+"dependencies": {
+    "@hapi/hapi: "^18.4.0",
+    "hapi-pino": "^6.3.0"
+}
+
+The "^" means that these are relative versions and upon running npm ci the security patches
+would be downloaded and installed automatically. Unfortunately, the way we have the npm modules
+cached, the container would not receive those security updates ("stale cache"). Generally for development, this
+is not a big deal.
+-----------------------------------------------------------------------------------------------------------------
+
+DOCKERIGNORE
+
+Same format and purpose as a gitignore file. Create a .dockerignore file and exclude any files you don't want
+to be moved into your container:
+
+.git/
+node_modules/
+
+NOTE: your git files are actually a security vulnerability. You don't want to publish them in production
+
+
+
+
+
+
+
+
+
 
 
